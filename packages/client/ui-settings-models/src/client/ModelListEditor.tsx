@@ -50,8 +50,8 @@ export interface ProbeTarget {
   settingsNs: string
   /**
    * Route being edited, when the card edits one. An adapter that already
-   * describes it answers from its own registry, so such a card can ask without
-   * an endpoint at all.
+   * describes it falls back to that route's installed default endpoint when the
+   * form shows none, so the fetch still interrogates the wire.
    */
   provider?: string
   /** Endpoint as the form currently shows it. */
@@ -150,6 +150,10 @@ function adopt(candidate: DiscoveredModelView): ModelDraft {
     ...candidate.name === undefined ? {} : { name: candidate.name },
     ...candidate.contextWindow === undefined ? {} : { contextWindow: candidate.contextWindow },
     ...candidate.maxTokens === undefined ? {} : { maxTokens: candidate.maxTokens },
+    // The adapter's own catalog knowledge, not the endpoint's: reasoning is
+    // the one capability no listing discloses, so adopting it keeps a catalog
+    // model's reasoning even where a profile can no longer inherit it by id.
+    ...candidate.reasoningEfforts === undefined ? {} : { reasoningEfforts: candidate.reasoningEfforts },
   }
 }
 
@@ -290,8 +294,8 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     })
   }
 
-  // A route the adapter already describes answers without an endpoint; only a
-  // draft with neither has nothing to ask about.
+  // A route the adapter describes can supply its own default endpoint, so the
+  // button only needs the route or a base URL.
   const askable = probe.provider !== undefined || (probe.baseURL !== undefined && probe.baseURL.length > 0)
   return (
     <section className={styles['modelCatalog']} aria-label={t('models')}>

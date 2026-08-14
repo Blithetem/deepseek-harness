@@ -680,7 +680,7 @@ describe('llm.discoverModels', () => {
     ctx.llm.registerModelDiscovery('llm-pi-ai', (probe) => {
       seen.push({ baseURL: probe.baseURL, api: probe.api, apiKey: probe.apiKey })
       return Promise.resolve([
-        { id: 'acme-large', name: 'Acme Large', contextWindow: 65_536, maxTokens: 4096 },
+        { id: 'acme-large', name: 'Acme Large', contextWindow: 65_536, maxTokens: 4096, reasoningEfforts: { off: null, high: 'high' } },
         { id: 'acme-small' },
       ])
     })
@@ -694,7 +694,7 @@ describe('llm.discoverModels', () => {
     })))
 
     expect(value.models).toEqual([
-      { id: 'acme-large', name: 'Acme Large', contextWindow: 65_536, maxTokens: 4096 },
+      { id: 'acme-large', name: 'Acme Large', contextWindow: 65_536, maxTokens: 4096, reasoningEfforts: { off: null, high: 'high' } },
       { id: 'acme-small' },
     ])
     expect(seen).toEqual([{
@@ -708,7 +708,7 @@ describe('llm.discoverModels', () => {
       .not.toContain('llm-pi-ai')
   })
 
-  it('carries the route being edited so an adapter can answer from its own registry', async () => {
+  it('carries the route being edited so an adapter can fall back to its default endpoint', async () => {
     const ctx = await harness()
     let probe: unknown
     ctx.llm.registerModelDiscovery('llm-pi-ai', (request_) => {
@@ -722,7 +722,7 @@ describe('llm.discoverModels', () => {
       provider: 'deepseek',
     })))
 
-    // No endpoint at all: a route the adapter already describes needs none.
+    // No endpoint at all: the route lets the adapter supply its installed default.
     expect(probe).toEqual({ provider: 'deepseek' })
     expect(value.models).toEqual([{ id: 'from-registry', contextWindow: 65_536, maxTokens: 4096 }])
   })

@@ -277,11 +277,14 @@ function invalid(provider: string, detail: string): never {
  * The one wire protocol a catalog route's shipped models agree on. This is what
  * lets a deployment add a model the installed catalog has not caught up with —
  * a provider's newest release — without restating the protocol its siblings
- * already use. A route whose shipped models disagree (an OpenAI-style catalog
- * spanning Responses and Chat Completions) has no such answer, so a model it
- * does not describe must name its protocol at the route.
+ * already use, and what model discovery assumes when a catalog route's draft
+ * names no protocol. A route whose shipped models disagree (an OpenAI-style
+ * catalog spanning Responses and Chat Completions) has no such answer, so a
+ * model it does not describe must name its protocol at the route.
+ * @param defaults - installed catalog models by id, as {@link catalogModels} returns.
+ * @returns the shared protocol, or `undefined` when the models disagree or none exist.
  */
-function sharedCatalogApi(defaults: ReadonlyMap<string, Model<Api>>): string | undefined {
+export function sharedCatalogApi(defaults: ReadonlyMap<string, Model<Api>>): string | undefined {
   const apis = new Set<string>()
   for (const model of defaults.values()) apis.add(model.api)
   return apis.size === 1 ? [...apis][0] : undefined

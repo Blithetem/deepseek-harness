@@ -554,15 +554,16 @@ interface ToolSchema {
  */
 interface LlmModelDiscoveryRequest {
   /**
-   * Route the draft is editing, when it edits an existing one. A route whose
-   * adapter already knows its models answers from that knowledge instead of
-   * asking the endpoint — the adapter's own registry is the better answer, and
-   * it costs no network call.
+   * Route the draft is editing, when it edits an existing one. An adapter may
+   * use it to fall back to that route's installed default endpoint and protocol
+   * when the draft names neither; the endpoint is still interrogated over the
+   * wire, never answered from a shipped catalog.
    */
   provider?: string
   /**
    * Endpoint to interrogate. Optional because a route the adapter already
-   * describes needs none; a route it does not must supply one.
+   * describes can supply its installed default; a route it does not must
+   * supply one.
    */
   baseURL?: string
   /** Wire protocol the endpoint speaks, when the draft names one. */
@@ -589,6 +590,16 @@ interface LlmDiscoveredModel {
   contextWindow?: number
   /** Maximum output tokens, when disclosed. */
   maxTokens?: number
+  /**
+   * Reasoning efforts the probing adapter knows for this id, when it does.
+   * Absent means the adapter has no knowledge of this model's reasoning —
+   * endpoints do not report it, so this only arrives when the adapter's own
+   * catalog covers the id within the provider it probes. `false` declares a
+   * non-reasoning model; a dict declares the offered levels and their wire
+   * spellings. `null` is only the `off` level's "offered, send nothing"
+   * spelling; a level absent from the dict is not offered.
+   */
+  reasoningEfforts?: false | Readonly<Record<string, string | null>>
 }
 ```
 

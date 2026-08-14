@@ -26,7 +26,7 @@ Choose **Add a custom provider** for a company gateway, self-hosted server, or p
 
 The Provider ID is permanent because requests, saved sessions, model defaults, and credential references use it. To rename a provider, add a new provider and delete the old one. The display name, base URL, protocol, credential, and models remain editable.
 
-Under **Model catalog**, choose **Fetch available models** to query the base URL and credential currently shown in the form. Selecting candidates updates the draft; the provider is not stored until you save. Catalog providers use their installed catalog without a network request.
+Under **Model catalog**, choose **Fetch available models** to query the base URL and credential currently shown in the form. Selecting candidates updates the draft; the provider is not stored until you save. A catalog provider whose form shows no base URL is queried at its installed default endpoint, so the reply lists what that endpoint actually serves.
 
 ### Image input
 

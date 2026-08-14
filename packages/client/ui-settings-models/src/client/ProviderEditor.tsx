@@ -221,8 +221,8 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
   const probeBaseURL = stringAt(draft, 'baseURL') ?? stringAt(fallback, 'baseURL')
   const probe = {
     settingsNs: namespace.ns,
-    // Naming the route lets an adapter that already describes it answer from
-    // its own registry — better metadata, no network call, no endpoint needed.
+    // Naming the route lets an adapter that already describes it fall back to
+    // that route's installed default endpoint when the form shows none.
     provider: props.provider,
     ...probeBaseURL === undefined ? {} : { baseURL: probeBaseURL },
     ...probeApi === undefined ? {} : { api: probeApi },

@@ -55,14 +55,16 @@ export interface LlmApi {
    * The payload is the draft, not a stored route: `settingsNs` selects the
    * adapter family that answers, and the rest comes from the form. `provider`
    * names the route being edited when there is one — an adapter that already
-   * describes that route answers from its own registry, with better metadata
-   * and no network call, and needs no endpoint. A route it does not describe is
-   * asked over the wire, which is what `baseURL`, `api`, and `apiKey` are for.
+   * describes that route falls back to its installed default endpoint when the
+   * form shows none, so the endpoint is still interrogated over the wire. A
+   * route it does not describe is asked at `baseURL`, which `api` and `apiKey`
+   * describe.
    *
    * Nothing is written — the reply is candidates, and only a later
    * `settings.mutate` decides what a route serves. `apiKey` is accepted here
    * but never stored or returned; a provider whose key is already stored omits
-   * it and the endpoint answers unauthenticated or refuses.
+   * it and the adapter resolves the stored one rather than asking
+   * unauthenticated.
    */
   discoverModels(
     request: RpcRequest<{
@@ -86,4 +88,13 @@ export interface DiscoveredModelView {
   contextWindow?: number
   /** Maximum output tokens, when disclosed. */
   maxTokens?: number
+  /**
+   * Reasoning efforts the probing adapter knows for this id, when it does.
+   * Absent means no knowledge — endpoints do not report it, so this only
+   * arrives when the adapter's own catalog covers the id within the provider
+   * it probes. `false` declares a non-reasoning model; a dict declares the
+   * offered levels and their wire spellings, `null` only for `off`'s
+   * "offered, send nothing"; a level absent from the dict is not offered.
+   */
+  reasoningEfforts?: false | Readonly<Record<string, string | null>>
 }

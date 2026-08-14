@@ -2,16 +2,15 @@
  * Answering "which models can this provider serve?" for the configuration
  * surface's "fetch available models" action.
  *
- * A route the installed pi-ai catalog ships is answered **from that catalog**,
- * with no network call at all: pi-ai's registry is the authoritative list for
- * its own providers, and it carries the capacities a listing endpoint would
- * not disclose. Only a route the catalog does not describe — a gateway, a
- * self-hosted server — is interrogated over the wire.
+ * Every interrogation goes over the wire. A draft names the endpoint the form
+ * shows; a route the installed pi-ai catalog ships without one falls back to
+ * that route's installed default endpoint, so the action answers with what the
+ * endpoint actually advertises rather than echoing the shipped catalog.
  *
- * Neither path is a catalog refresh. Nothing here is stored: the request
- * carries a draft the user is still editing, and the reply is candidate
- * metadata the surface offers for adoption. `settings.yaml` remains the only
- * thing that decides what a route serves.
+ * This is not a catalog refresh. Nothing here is stored: the request carries a
+ * draft the user is still editing, and the reply is candidate metadata the
+ * surface offers for adoption. `settings.yaml` remains the only thing that
+ * decides what a route serves.
  *
  * Only OpenAI-compatible protocols are interrogated. Their listing is the one
  * shape a gateway, a self-hosted server, and the official endpoints all agree
@@ -24,8 +23,10 @@
 
 import { INVALID_CREDENTIAL_CODE, LlmError, normalizeApiKey } from '@deepseek-ai/dsh-llm'
 import type { LlmDiscoveredModel, LlmModelDiscoveryRequest } from '@deepseek-ai/dsh-llm'
+import type { Api, Model } from '@earendil-works/pi-ai'
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
-import { catalogModels } from './catalog.ts'
+import { catalogModels, catalogProvider, sharedCatalogApi } from './catalog.ts'
 
 /**
  * Protocols whose model listing this module can read: the two that speak
@@ -162,6 +163,54 @@ function readListing(body: unknown): LlmDiscoveredModel[] {
 }
 
 /**
+ * The installed catalog's reasoning knowledge for one model, in the
+ * discovered-model spelling: `false` for a non-reasoning model, else a dict
+ * of offered levels to their wire spellings. `null` is only `off`'s
+ * "offered, send nothing" value, because pi-ai spells that level by omitting
+ * it from the map; a level absent from the dict is not offered. A level the
+ * catalog leaves to the provider's default is spelled by its canonical name,
+ * which is the wire value for the OpenAI-compatible protocols discovery
+ * probes.
+ * @param model - the installed catalog entry whose reasoning to carry.
+ * @returns the efforts the discovered model should advertise.
+ */
+function catalogReasoningEfforts(model: Model<Api>): false | Record<string, string | null> {
+  if (!model.reasoning) return false
+  const map = model.thinkingLevelMap ?? {}
+  const efforts: Record<string, string | null> = {}
+  for (const level of getSupportedThinkingLevels(model)) {
+    const wire = map[level]
+    // A level offered through the provider default has no explicit spelling;
+    // for the OpenAI-compatible protocols discovery probes, that spelling is
+    // the canonical level name. `off` is the exception: "send nothing".
+    efforts[level] = wire ?? (level === 'off' ? null : level)
+  }
+  return efforts
+}
+
+/**
+ * Attach the installed catalog's reasoning to discovered ids the adapter
+ * recognizes. No listing endpoint reports a model's reasoning, so this is the
+ * only way a probe can carry it; a model the catalog does not describe keeps
+ * no `reasoningEfforts` field, and the surface falls back to hand-entry for
+ * the capability exactly as it does for capacities.
+ * @param models - the advertised models in endpoint order.
+ * @param provider - the route being edited, when the draft names one.
+ * @returns the models with catalog reasoning attached where known.
+ */
+function attachCatalogReasoning(
+  models: readonly LlmDiscoveredModel[],
+  provider: string | undefined,
+): LlmDiscoveredModel[] {
+  const installed = provider === undefined ? new Map<string, Model<Api>>() : catalogModels(provider)
+  if (installed.size === 0) return [...models]
+  return models.map((model) => {
+    const base = installed.get(model.id)
+    return base === undefined ? model : { ...model, reasoningEfforts: catalogReasoningEfforts(base) }
+  })
+}
+
+/**
  * Accept one probe key, or refuse it before the header is built. Without this
  * the `fetch` below would throw a ByteString `TypeError` that this function's
  * catch reports as `could not reach <url>` — blaming the network for a local,
@@ -196,45 +245,35 @@ export async function discoverModels(
   request: LlmModelDiscoveryRequest,
   storedApiKey?: () => Promise<string | undefined>,
 ): Promise<readonly LlmDiscoveredModel[]> {
-  // A catalog route already has its answer, and a better one: the installed
-  // entries carry context windows and output caps no listing endpoint reports.
-  if (request.provider !== undefined) {
-    const installed = catalogModels(request.provider)
-    if (installed.size > 0) {
-      return [...installed.values()].map(model => ({
-        id: model.id,
-        name: model.name,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-      }))
-    }
-  }
-  if (request.baseURL === undefined || request.baseURL.length === 0) {
+  // A draft that names no base URL is asked at the installed catalog route's
+  // own endpoint, so a catalog route without a stored base URL is still
+  // interrogated against what its provider actually serves.
+  const baseURL = request.baseURL ?? catalogProvider(request.provider ?? '')?.baseUrl
+  if (baseURL === undefined || baseURL.length === 0) {
     throw new LlmError(
-      `pi-ai ships no catalog for provider "${request.provider ?? ''}", so its models can only come from its`
-      + " endpoint; set a baseURL, or enter this provider's models by hand",
+      `provider "${request.provider ?? ''}" has no endpoint to interrogate; set a baseURL,`
+      + " or enter this provider's models by hand",
       'DISCOVERY_FAILED',
     )
   }
-  // A draft that has not chosen a protocol yet is asked as OpenAI Chat
-  // Completions: it is the shape a gateway is overwhelmingly likely to speak,
-  // and the alternative — refusing until the field is filled — would withhold
-  // the action from the case it exists for. The cost is a misdirected message
-  // when the endpoint speaks something else (an Anthropic gateway answers 401,
-  // which reads as a credential problem), and hand-entry remains the way out.
-  const api = request.api ?? 'openai-completions'
+  // A draft that has not chosen a protocol yet is asked as the catalog route's
+  // own when one is installed and unambiguous, else OpenAI Chat Completions: it
+  // is the shape a gateway is overwhelmingly likely to speak, and the
+  // alternative — refusing until the field is filled — would withhold the
+  // action from the case it exists for. The cost is a misdirected message when
+  // the endpoint speaks something else, and hand-entry remains the way out.
+  const api = request.api ?? sharedCatalogApi(catalogModels(request.provider ?? '')) ?? 'openai-completions'
   if (!LISTABLE_PROTOCOLS.has(api)) {
     throw new LlmError(
       `pi-ai protocol "${api}" has no model listing this build can read; enter this provider's models by hand`,
       'DISCOVERY_UNSUPPORTED',
     )
   }
-  const url = listingUrl(request.baseURL)
+  const url = listingUrl(baseURL)
   // A key typed into the form wins: it is the one the user is testing, and it
   // may be the replacement for exactly the stored key that is failing. The
-  // stored one is only asked for here, past the catalog short-circuit and the
-  // protocol check, so a route answered from the registry costs no credential
-  // lookup — and no diagnostic about a credential it never needed.
+  // stored one is asked for only past the protocol check, so an endpoint this
+  // build cannot read costs no credential lookup.
   // A probe carrying no key stays unauthenticated, which is how a route that
   // relies on the provider's own ambient discovery is meant to be asked.
   const supplied = request.apiKey ?? await storedApiKey?.()
@@ -280,5 +319,5 @@ export async function discoverModels(
   } catch (error: unknown) {
     throw new LlmError(`${url} did not answer with JSON`, 'DISCOVERY_FAILED', { cause: error })
   }
-  return readListing(body)
+  return attachCatalogReasoning(readListing(body), request.provider)
 }

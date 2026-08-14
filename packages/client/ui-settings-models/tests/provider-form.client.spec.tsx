@@ -436,8 +436,8 @@ describe('endpoint interrogation', () => {
     await waitFor(() => { expect(discover).toHaveBeenCalled() })
     expect(firstProbe(discover)).toEqual({
       settingsNs: 'llm-pi-ai',
-      // The route is named, so an adapter that already describes it answers
-      // from its own registry rather than the endpoint.
+      // The route is named, so an adapter that already describes it can fall
+      // back to its installed default endpoint when the form shows none.
       provider: 'openai',
       baseURL: 'https://edited.example/v1',
       apiKey: 'typed-not-saved',
@@ -465,7 +465,10 @@ describe('endpoint interrogation', () => {
 
   it('adopts only the picked candidates, keeping a row the user already tuned', async () => {
     const discover = vi.fn(() => Promise.resolve(ok({
-      models: [{ id: 'kept', contextWindow: 999 }, { id: 'fresh', contextWindow: 4096, name: 'Fresh' }],
+      models: [
+        { id: 'kept', contextWindow: 999 },
+        { id: 'fresh', contextWindow: 4096, name: 'Fresh', reasoningEfforts: { off: null, high: 'high' } },
+      ],
     })))
     const { mutate } = await mountSection({
       discover,
@@ -484,7 +487,8 @@ describe('endpoint interrogation', () => {
     await waitFor(() => { expect(mutate).toHaveBeenCalled() })
     expect(firstMutate(mutate).ops[0]?.value).toEqual([
       { id: 'kept', contextWindow: 111 },
-      { id: 'fresh', contextWindow: 4096, name: 'Fresh' },
+      // The adapter's catalog reasoning survives adoption into the draft.
+      { id: 'fresh', contextWindow: 4096, name: 'Fresh', reasoningEfforts: { off: null, high: 'high' } },
     ])
   })
 
@@ -522,7 +526,7 @@ describe('endpoint interrogation', () => {
     await mountSection({ discover, providers: { openai: {} } })
     openEditor('openai')
 
-    // A route the adapter already describes needs no endpoint at all.
+    // A route the adapter describes supplies its own default endpoint.
     expect(buttonNamed(en.fetchModels).disabled).toBe(false)
     fireEvent.click(screen.getByText(en.fetchModels))
 

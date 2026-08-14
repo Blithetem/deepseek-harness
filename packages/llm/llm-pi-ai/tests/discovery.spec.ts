@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { userAgent } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
-import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { discoverModels } from '../src/discovery.ts'
 
 const servers: Server[] = []
@@ -73,29 +72,101 @@ async function harness(): Promise<Context> {
 }
 
 describe('catalog-route model discovery', () => {
-  it('answers from the installed registry, with capacities and no network call', async () => {
+  it('interrogates the endpoint even for a route the catalog describes', async () => {
     const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'from-the-endpoint' }] }) })
     const ctx = await harness()
 
     const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: server.url })
 
-    // pi-ai's own registry is the authority for its own providers, and it
-    // carries what a listing endpoint would not disclose.
-    expect(models.map(model => model.id).sort())
-      .toEqual(getBuiltinModels('deepseek').map(model => model.id).sort())
-    expect(models.every(model => (model.contextWindow ?? 0) > 0 && (model.maxTokens ?? 0) > 0)).toBe(true)
-    expect(server.paths).toEqual([])
+    // The action answers with what the endpoint advertises, never the shipped
+    // catalog, so the form's base URL wins for a catalog route too.
+    expect(models.map(model => model.id)).toEqual(['from-the-endpoint'])
+    expect(server.paths).toEqual(['/models'])
   })
 
-  it('needs no endpoint for a route the catalog describes', async () => {
+  it('falls back to the installed default endpoint for a catalog route without one', async () => {
     const ctx = await harness()
-    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })).resolves.not.toHaveLength(0)
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })
+
+    expect(urls).toEqual(['https://api.deepseek.com/models'])
+    expect(models.map(model => model.id)).toEqual(['deepseek-v4-flash'])
   })
 
-  it('says where a route the catalog does not describe must get its models', async () => {
+  it('attaches the installed catalog\'s reasoning to ids it recognizes', async () => {
+    const ctx = await harness()
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      data: [{ id: 'deepseek-v4-flash' }, { id: 'not-in-the-catalog' }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })
+
+    // Reasoning is the one capability no listing reports, so it rides the
+    // installed catalog for an id it recognizes and stays absent otherwise.
+    expect(models).toEqual([
+      { id: 'deepseek-v4-flash', reasoningEfforts: { off: null, high: 'high', max: 'max' } },
+      { id: 'not-in-the-catalog' },
+    ])
+  })
+
+  it('spells a catalog model whose levels are all provider defaults by their canonical names', async () => {
+    const ctx = await harness()
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      data: [{ id: 'workers-ai/@cf/moonshotai/kimi-k2.5' }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', {
+      provider: 'cloudflare-ai-gateway',
+      baseURL: 'https://gateway.example/v1',
+    })
+
+    // No thinkingLevelMap at all: every offered level is the provider default,
+    // whose wire spelling on an OpenAI-compatible route is the canonical name.
+    expect(models).toEqual([{
+      id: 'workers-ai/@cf/moonshotai/kimi-k2.5',
+      reasoningEfforts: { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high' },
+    }])
+  })
+
+  it('declares a catalog model marked non-reasoning as reasoningEfforts: false', async () => {
+    const ctx = await harness()
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ data: [{ id: 'gpt-4' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai' })
+
+    expect(models).toEqual([{ id: 'gpt-4', reasoningEfforts: false }])
+  })
+
+  it('leaves a route the catalog does not describe without reasoning', async () => {
+    const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'acme-large' }] }) })
+    const ctx = await harness()
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway', baseURL: server.url })
+
+    expect(models).toEqual([{ id: 'acme-large' }])
+  })
+
+  it('says where a route with no endpoint must get its models', async () => {
     const ctx = await harness()
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway' }))
-      .rejects.toThrow(/ships no catalog for provider "acme-gateway".*set a baseURL/s)
+      .rejects.toThrow(/has no endpoint to interrogate.*set a baseURL/s)
     // A form that cleared the field says the same thing as one that never had it.
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway', baseURL: '' }))
       .rejects.toThrow(/set a baseURL/)
@@ -178,16 +249,17 @@ describe('draft-provider model discovery', () => {
       .toEqual(['Bearer stored-key', 'Bearer typed', undefined])
   })
 
-  it('leaves a catalog route\'s credential unresolved, having never reached the network', async () => {
-    // The catalog answers before any endpoint is asked, so a route whose
-    // profile names a credential that is not set must still answer rather than
-    // failing over a key the interrogation never needed.
+  it('surfaces a catalog route\'s missing credential when probing its default endpoint', async () => {
+    // Probing needs the route's credential, so a profile that names one which
+    // is not set fails loud rather than answering with the shipped catalog or
+    // going out unauthenticated.
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     Reflect.deleteProperty(process.env, 'ABSENT_FOR_DISCOVERY')
     await ctx.plugin(LlmPiAi, { providers: { deepseek: { apiKeyEnv: 'ABSENT_FOR_DISCOVERY' } } })
 
-    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })).resolves.not.toHaveLength(0)
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' }))
+      .rejects.toMatchObject({ code: 'MISSING_CREDENTIAL' })
   })
 
   it('drops unusable rows rather than failing the whole listing', async () => {
@@ -312,6 +384,12 @@ describe('draft-provider model discovery', () => {
 
   it('is offered for the namespace, and refuses one it does not serve', async () => {
     const ctx = await harness()
+    // A catalog route with no draft endpoint is asked at its installed default,
+    // so the openai probe must not reach the real network.
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ data: [{ id: 'gpt-4' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
 
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai' })).resolves.not.toHaveLength(0)
     await expect(ctx.llm.discoverModels('llm-deepseek', { baseURL: 'https://api.deepseek.com' }))
@@ -323,6 +401,10 @@ describe('draft-provider model discovery', () => {
   it('withdraws the offer when the plugin unloads', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ data: [{ id: 'gpt-4' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
     const fiber = await ctx.plugin(LlmPiAi, {})
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai' })).resolves.not.toHaveLength(0)
 
