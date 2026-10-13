@@ -50,6 +50,9 @@ jobs:
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repository from a
+          # working tree.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.release_tag }}
           PRERELEASE: ${{ inputs.prerelease }}
           SOURCE_RUN: ${{ inputs.run_id }}
