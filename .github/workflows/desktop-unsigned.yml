@@ -9,9 +9,11 @@ name: Desktop unsigned (Windows x64)
 # artifact. It needs no signing certificate, no update origin, and no upload
 # credentials, and it creates no release completion record.
 #
-# Every successful build also republishes the rolling `desktop-unsigned-latest`
-# release, whose single fixed asset name gives one permanent anonymous download
-# URL for the newest installer.
+# A build started with `source_tag` (the fork sync workflow does this for every
+# new upstream `dsh-v*` release) checks out that tag and republishes the rolling
+# `desktop-unsigned-latest` release, whose single fixed asset name gives one
+# permanent anonymous download URL for the newest release installer. A manual
+# branch build keeps its installer as a workflow artifact only.
 #
 # The command requires the target dotenv file `apps/desktop/.env.windows`, whose
 # release settings are file-owned rather than ambient: this workflow writes the
@@ -27,6 +29,14 @@ on:
     branches: [ci-desktop-unsigned]
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: Git ref to build; empty builds the triggering ref
+        required: false
+        default: ''
+      source_tag:
+        description: Upstream release tag this build publishes; empty skips release publication
+        required: false
+        default: ''
       build_version:
         description: Full build version; empty derives <product>.<YYYYMMDD>.<run number>
         required: false
@@ -58,6 +68,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # A release build checks out the upstream tag instead of this branch,
+          # so the published installer carries released code only.
+          ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
 
       - uses: pnpm/action-setup@v4
@@ -168,6 +181,9 @@ jobs:
   publish:
     name: Publish the rolling release
     needs: package
+    # Only a build started for an upstream release tag republishes the release;
+    # a manual branch build keeps its installer as a workflow artifact.
+    if: inputs.source_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -186,6 +202,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: desktop-unsigned-latest
           VERSION: ${{ needs.package.outputs.version }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
         run: |
           set -euo pipefail
           mapfile -t exes < <(find installer -type f -name '*.exe')
@@ -200,9 +217,12 @@ jobs:
           fi
           gh release upload "$TAG" deepseek-harness-desktop-unsigned-win-x64.exe --clobber
           url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/deepseek-harness-desktop-unsigned-win-x64.exe"
-          notes=$(printf '%s\n\n%s\n%s\n%s\n\n%s\n' \
+          # `Source tag` is the state the fork sync workflow reads to decide
+          # whether this release already carries the newest upstream tag.
+          notes=$(printf '%s\n\n%s\n%s\n%s\n%s\n\n%s\n' \
             'Rolling release holding the newest unsigned Windows x64 desktop test installer.' \
-            "This build: $VERSION" \
+            "Source tag: $SOURCE_TAG" \
+            "Build version: $VERSION" \
             "Commit: $GITHUB_SHA" \
             "Build run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             "Anonymous download: $url")
