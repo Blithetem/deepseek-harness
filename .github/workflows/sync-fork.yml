@@ -1,0 +1,118 @@
+name: Sync fork
+
+# Keeps this fork current with its upstream (deepseek-ai/deepseek-harness)
+# without a local checkout:
+#
+# - `sync-master` merges upstream `master` into this fork's `master`. It is a
+#   merge rather than a fast-forward "Sync fork", because this workflow file is
+#   itself a fork-only commit on `master` and `gh repo sync` rejects that
+#   divergence.
+# - `follow-master` merges the refreshed `master` into `ci-desktop-unsigned` and
+#   starts the Windows installer whenever that branch moves.
+#
+# The schedule lives on `master` because scheduled workflows only run from the
+# default branch. A push made with the default `GITHUB_TOKEN` starts no other
+# workflow, so the installer is started explicitly (`workflow_dispatch` is the
+# documented exception). Add a `FORK_SYNC_TOKEN` secret (fine-grained token with
+# Contents and Actions read/write) to let master pushes start the repository's
+# own CI lanes as well; `follow-master` then skips its explicit dispatch,
+# because the branch push already started the build.
+on:
+  schedule:
+    # 22:00 UTC = 06:00 Asia/Shanghai.
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Also update ci-desktop-unsigned and start the Windows installer
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-fork
+  cancel-in-progress: false
+
+jobs:
+  sync-master:
+    name: Merge upstream master
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+      - name: Merge upstream master
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
+          git fetch --no-tags upstream master
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'master already contains upstream/master' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A conflicted merge fails this job on purpose: upstream history moved
+          # in a way the fork's own commits cannot absorb automatically.
+          git merge --no-edit upstream/master
+          git push origin HEAD:master
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          echo "master merged upstream $(git rev-parse --short upstream/master)" >> "$GITHUB_STEP_SUMMARY"
+
+  follow-master:
+    name: Update the packaging branch
+    needs: sync-master
+    if: github.event_name == 'schedule' || inputs.package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Merge master into ci-desktop-unsigned
+        id: merge
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          branch=ci-desktop-unsigned
+          before=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq .object.sha)
+          # Server-side merge, so this job needs no second checkout. A conflict
+          # (HTTP 409) fails the step instead of leaving a partial state.
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/merges" \
+            -f base="${branch}" -f head=master \
+            -f commit_message="Merge master into ${branch}" > /dev/null
+          after=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq .object.sha)
+          if [ "$before" = "$after" ]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "${branch} already contains master" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo "${branch}: ${before} -> ${after}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Start the Windows installer build
+        if: steps.merge.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PAT_CONFIGURED: ${{ secrets.FORK_SYNC_TOKEN != '' }}
+          BRANCH_CHANGED: ${{ steps.merge.outputs.changed }}
+        run: |
+          set -euo pipefail
+          if [ "$BRANCH_CHANGED" = 'true' ] && [ "$EVENT" = 'schedule' ] && [ "$PAT_CONFIGURED" = 'true' ]; then
+            echo 'the branch push already started the installer' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          workflow_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.path == ".github/workflows/desktop-unsigned.yml") | .id')
+          test -n "$workflow_id"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/dispatches" \
+            -f ref=ci-desktop-unsigned
+          echo 'started desktop-unsigned.yml on ci-desktop-unsigned' >> "$GITHUB_STEP_SUMMARY"
