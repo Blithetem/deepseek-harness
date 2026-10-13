@@ -1,0 +1,158 @@
+name: Desktop unsigned (Windows x64)
+
+# Builds the unsigned Windows x64 desktop installer for local testing.
+#
+# Upstream ships no desktop packaging workflow, and desktop release packaging is
+# owned by the release commands rather than continuous integration. This workflow
+# calls the same packaging entry point those commands use
+# (`package:desktop:win:x64:unsigned`) and publishes the installer as a workflow
+# artifact. It needs no signing certificate, no update origin, and no upload
+# credentials, and it creates no release completion record.
+#
+# The command requires the target dotenv file `apps/desktop/.env.windows`, whose
+# release settings are file-owned rather than ambient: this workflow writes the
+# public placeholder values from `.env.windows.example`. Replace the policy
+# origins with the deployment's own origins before handing an installer to
+# anyone who relies on the mandatory-update flow.
+
+on:
+  # Pushing to this dedicated branch rebuilds the installer. Keeping the workflow
+  # off the default branch leaves the mirror-synced master exactly as upstream
+  # has it, and a push here does not start the repository's master pipelines.
+  push:
+    branches: [ci-desktop-unsigned]
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: Full build version; empty derives <product>.<YYYYMMDD>.<run number>
+        required: false
+        default: ''
+      retention_days:
+        description: Artifact retention in days (1-90)
+        required: false
+        default: '14'
+
+permissions:
+  contents: read
+
+env:
+  # CI runs must never report to the production telemetry endpoint baked into
+  # apps/cli/cordis.yml.
+  DSH_TELEMETRY_DISABLED: '1'
+
+concurrency:
+  group: desktop-unsigned-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Unsigned installer (win-x64)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # pnpm and the native module builds create directory symlinks.
+      - name: Enable Windows Developer Mode (symlink support)
+        shell: pwsh
+        run: >-
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+          /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.12'
+
+      # A security agent that scans a freshly written executable can hold it open
+      # for a few seconds, which fails electron-builder's in-place rewrite of the
+      # application image. Keep the build tree out of that scan.
+      - name: Exclude the build tree from on-access scanning
+        shell: pwsh
+        continue-on-error: true
+        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE -ErrorAction Stop
+
+      # Every downloaded archive is verified before extraction, so this immutable
+      # download cache can seed later runs: Electron, the bundled Node, and the
+      # bundled Python distributions.
+      - uses: actions/cache@v4
+        with:
+          path: apps/desktop/.desktop-build/downloads
+          key: desktop-downloads-win-x64-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            desktop-downloads-win-x64-
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      - name: Write local packaging settings
+        shell: bash
+        run: |
+          cat > apps/desktop/.env.windows <<'EOF'
+          DSH_DESKTOP_APP_ID=com.deepseek.harness
+          DSH_DESKTOP_AUTO_UPDATE_ENV=test
+          DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://download-test.deepseek.com
+          DSH_DESKTOP_MANDATORY_UPDATE_CONFIG={"allowedAuthOrigins":["https://login.example.com"]}
+          EOF
+
+      - name: Resolve build version
+        shell: pwsh
+        run: |
+          $requested = '${{ inputs.build_version }}'.Trim()
+          if ($requested -ne '') {
+            $version = $requested
+          } else {
+            # Derive the prefix from the repository's own rule instead of repeating it here.
+            $prefix = node --input-type=module -e 'import { readFileSync } from "node:fs"; import { desktopBuildVersionPrefix } from "./apps/desktop/scripts/desktop-build-version.mjs"; process.stdout.write(desktopBuildVersionPrefix(JSON.parse(readFileSync("apps/desktop/package.json", "utf8")).version))'
+            $version = "$prefix$(Get-Date -Format 'yyyyMMdd').${{ github.run_number }}"
+          }
+          Write-Host "build version: $version"
+          "DSH_DESKTOP_CI_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Package unsigned Windows installer
+        shell: pwsh
+        run: pnpm run package:desktop:win:x64:unsigned -- --build-version $env:DSH_DESKTOP_CI_VERSION
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: deepseek-harness-desktop-unsigned-win-x64-${{ env.DSH_DESKTOP_CI_VERSION }}
+          path: |
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.blockmap
+          if-no-files-found: error
+          # The installer is already compressed; recompressing 270 MB wastes time.
+          compression-level: 0
+          # `inputs` is empty for the push trigger, so this falls back to the default.
+          retention-days: ${{ fromJSON(inputs.retention_days || '14') }}
+
+      - name: Upload packaging journal
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-packaging-journal-${{ github.run_id }}
+          path: apps/desktop/.desktop-build/packaging-runs/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summarize
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Unsigned desktop build"
+            echo
+            echo "- build version: $DSH_DESKTOP_CI_VERSION"
+            echo "- artifacts:"
+            ls -l apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe | sed 's/^/  /'
+          } >> "$GITHUB_STEP_SUMMARY"
