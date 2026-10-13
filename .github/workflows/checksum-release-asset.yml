@@ -1,0 +1,69 @@
+name: Checksum a release asset
+
+# Downloads a published release asset inside GitHub's network and prints its
+# size and SHA-256, so a copy fetched through a mirror or proxy can be verified
+# without trusting that mirror. Set `attach` to keep the digest beside the asset
+# as `<asset>.sha256`.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag holding the asset
+        required: true
+        type: string
+        default: desktop-unsigned-latest
+      asset:
+        description: Asset file name
+        required: true
+        type: string
+        default: deepseek-harness-desktop-unsigned-win-x64.exe
+      attach:
+        description: Also upload <asset>.sha256 to the release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: checksum-release-asset
+  cancel-in-progress: false
+
+jobs:
+  checksum:
+    name: Compute the digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download the asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          ASSET: ${{ inputs.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p asset
+          gh release download "$TAG" --pattern "$ASSET" --dir asset
+          ls -l asset
+      - name: Print the digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          ASSET: ${{ inputs.asset }}
+          ATTACH: ${{ inputs.attach }}
+        run: |
+          set -euo pipefail
+          file="asset/$ASSET"
+          size=$(stat -c %s "$file")
+          digest=$(sha256sum "$file" | awk '{print $1}')
+          {
+            echo "size: $size"
+            echo "sha256: $digest"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$ATTACH" = 'true' ]; then
+            printf '%s  %s\n' "$digest" "$ASSET" > "asset/$ASSET.sha256"
+            gh release upload "$TAG" "asset/$ASSET.sha256" --clobber
+            echo "attached asset/$ASSET.sha256" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
