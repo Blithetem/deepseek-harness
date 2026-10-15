@@ -30,12 +30,11 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
-  actions: write
-  # Upstream commits often touch .github/workflows/*, and pushing those merged
-  # files to master needs this scope on top of contents: write.
-  workflows: write
+# No `permissions` block on purpose: this workflow must push merged
+# .github/workflows/* files, and the `workflows` scope cannot be requested
+# through the YAML permissions key at all. The GITHUB_TOKEN therefore inherits
+# the repository default (Settings → Actions → Workflow permissions → Read and
+# write), which covers contents, actions, and workflows.
 
 concurrency:
   group: sync-fork
