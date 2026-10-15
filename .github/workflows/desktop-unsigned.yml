@@ -216,6 +216,12 @@ jobs:
               --notes 'Rolling release holding the newest unsigned Windows x64 desktop test installer.'
           fi
           gh release upload "$TAG" deepseek-harness-desktop-unsigned-win-x64.exe --clobber
+          # The checksum asset is what the download machine's script compares
+          # against, so it must never outlive its build.
+          sha256sum deepseek-harness-desktop-unsigned-win-x64.exe \
+            | awk '{print $1 "  deepseek-harness-desktop-unsigned-win-x64.exe"}' \
+            > deepseek-harness-desktop-unsigned-win-x64.exe.sha256
+          gh release upload "$TAG" deepseek-harness-desktop-unsigned-win-x64.exe.sha256 --clobber
           url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/deepseek-harness-desktop-unsigned-win-x64.exe"
           # `Source tag` is the state the fork sync workflow reads to decide
           # whether this release already carries the newest upstream tag.
