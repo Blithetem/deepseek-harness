@@ -1,40 +1,22 @@
 name: Sync fork
 
-# Keeps this fork current with its upstream (deepseek-ai/deepseek-harness) and
-# rebuilds the installer for every upstream release:
+# Keeps this fork current with its upstream (deepseek-ai/deepseek-harness):
 #
-# - `resolve` finds the newest upstream `dsh-v*` tag and skips the build when the
-#   rolling release already records that tag, so the permanent download URL
-#   always carries the newest official release rather than an unreleased commit.
+# - `resolve` finds the newest upstream `dsh-v*` tag.
 # - `sync-master` merges upstream `master` into this fork's `master` and copies
-#   the release tag, so the fork holds the ref the build checks out.
-# - `build-release` dispatches the packaging workflow with the tag as its source
-#   ref; that workflow publishes the fixed-name asset of the
-#   `desktop-unsigned-latest` release.
+#   that tag, so the fork holds every release ref.
 #
-# A push made with the default `GITHUB_TOKEN` starts no other workflow, so the
-# packaging run is dispatched explicitly (`workflow_dispatch` is the documented
-# exception). Nothing here needs a personal access token.
+# Nothing here starts a build: packaging was taken out of this workflow, so a
+# new upstream release is only mirrored until someone starts a build by hand.
+#
+# Pushing with `FORK_SYNC_TOKEN` is required because upstream commits routinely
+# touch .github/workflows/*, and the `workflows` scope cannot be requested
+# through the YAML permissions key — hence no `permissions` block either.
 on:
   schedule:
-    # Every six hours, so a release is picked up within that window.
-    - cron: '*/30 * * * *'
+    # Every six hours, so a release is mirrored within that window.
+    - cron: '0 2,8,14,20 * * *'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Upstream dsh-v* tag to build; empty uses the newest upstream tag
-        type: string
-        default: ''
-      force:
-        description: Build even when this fork already published that tag
-        type: boolean
-        default: false
-
-# No `permissions` block on purpose: this workflow must push merged
-# .github/workflows/* files, and the `workflows` scope cannot be requested
-# through the YAML permissions key at all. The GITHUB_TOKEN therefore inherits
-# the repository default (Settings → Actions → Workflow permissions → Read and
-# write), which covers contents, actions, and workflows.
 
 concurrency:
   group: sync-fork
@@ -42,7 +24,6 @@ concurrency:
 
 env:
   UPSTREAM: deepseek-ai/deepseek-harness
-  RELEASE_TAG: desktop-unsigned-latest
 
 jobs:
   resolve:
@@ -51,24 +32,13 @@ jobs:
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
-      version: ${{ steps.resolve.outputs.version }}
-      build: ${{ steps.resolve.outputs.build }}
     steps:
       - name: Resolve
         id: resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          REQUESTED: ${{ inputs.tag }}
-          FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          if [ -n "$REQUESTED" ]; then
-            tag="$REQUESTED"
-          else
-            tag=$(git ls-remote --tags --refs "https://github.com/${UPSTREAM}.git" 'dsh-v*' \
-              | awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
-          fi
+          tag=$(git ls-remote --tags --refs "https://github.com/${UPSTREAM}.git" 'dsh-v*' \
+            | awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
           if [ -z "$tag" ]; then
             echo 'no upstream dsh-v* tag found' >&2
             exit 1
@@ -77,22 +47,8 @@ jobs:
             dsh-v*) ;;
             *) echo "${tag} is not a dsh-v* tag" >&2; exit 1 ;;
           esac
-          version="${tag#dsh-v}"
-          # The rolling release records the release it currently serves.
-          published=$(gh release view "$RELEASE_TAG" --json body --jq .body 2>/dev/null \
-            | sed -n 's/^Source tag: //p' | head -1 || true)
-          if [ "$published" = "$tag" ] && [ "$FORCE" != 'true' ]; then
-            build=false
-            echo "already published ${tag}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            build=true
-            echo "building ${tag} (published: ${published:-none})" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "build=$build"
-          } >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "newest upstream tag: $tag" >> "$GITHUB_STEP_SUMMARY"
 
   sync-master:
     name: Sync master and the release tag
@@ -123,7 +79,6 @@ jobs:
             git push origin HEAD:master
             echo "master merged upstream $(git rev-parse --short upstream/master)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          # The build checks out this tag, so the fork needs the ref.
           git fetch --no-tags upstream "refs/tags/${TAG}:refs/tags/${TAG}"
           git push origin "refs/tags/${TAG}"
-          echo "tag ${TAG} is available for the build checkout" >> "$GITHUB_STEP_SUMMARY"
+          echo "tag ${TAG} is available in the fork" >> "$GITHUB_STEP_SUMMARY"
