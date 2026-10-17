@@ -18,7 +18,7 @@ name: Sync fork
 on:
   schedule:
     # Every six hours, so a release is picked up within that window.
-    - cron: '0 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       tag:
