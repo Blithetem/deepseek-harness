@@ -127,28 +127,3 @@ jobs:
           git fetch --no-tags upstream "refs/tags/${TAG}:refs/tags/${TAG}"
           git push origin "refs/tags/${TAG}"
           echo "tag ${TAG} is available for the build checkout" >> "$GITHUB_STEP_SUMMARY"
-
-  build-release:
-    name: Start the installer build
-    needs: [resolve, sync-master]
-    if: needs.resolve.outputs.build == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Dispatch the packaging workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.resolve.outputs.tag }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-        run: |
-          set -euo pipefail
-          workflow_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate \
-            --jq '.workflows[] | select(.path == ".github/workflows/desktop-unsigned.yml") | .id')
-          test -n "$workflow_id"
-          jq -n --arg ref ci-desktop-unsigned --arg source "refs/tags/${TAG}" \
-            --arg tag "$TAG" --arg version "$VERSION" \
-            '{ref: $ref, inputs: {source_ref: $source, source_tag: $tag, build_version: $version}}' \
-            | gh api --method POST \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/dispatches" --input -
-          echo "started desktop-unsigned.yml for ${TAG}" >> "$GITHUB_STEP_SUMMARY"
