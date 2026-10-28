@@ -66,8 +66,10 @@ jobs:
           if [ -n "$REQUESTED" ]; then
             tag="$REQUESTED"
           else
-            tag=$(git ls-remote --tags --refs "https://github.com/${UPSTREAM}.git" 'dsh-v*' \
-              | awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
+            tag_list=$(git ls-remote --tags --refs "https://github.com/${UPSTREAM}.git" 'dsh-v*' \
+              | awk '{print $2}' | sed 's|refs/tags/||')
+            echo "resolve: upstream tags=$(printf '%s\n' "$tag_list" | wc -l) newest5=$(printf '%s\n' "$tag_list" | sort -V | tail -5 | tr '\n' ' ')"
+            tag=$(printf '%s\n' "$tag_list" | sort -V | tail -1)
           fi
           if [ -z "$tag" ]; then
             echo 'no upstream dsh-v* tag found' >&2
@@ -93,6 +95,7 @@ jobs:
             echo "version=$version"
             echo "build=$build"
           } >> "$GITHUB_OUTPUT"
+          echo "resolve: tag=[$tag] version=[$version] published=[${published:-}] build=[$build]"
 
   sync-master:
     name: Sync master and the release tag
